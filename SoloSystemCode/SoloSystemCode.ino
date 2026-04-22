@@ -42,7 +42,7 @@ void loop() {
     if (stableState == HIGH) {
       digitalWrite(RELAY3, HIGH);   // Pump on 
       SwitchFlag = true;
-      Serial.println("Switch Enabled");
+      Serial.println("Switch Enabled | Plasma ON");
 
       delay(10000); //Pump ramp up: 10 Seconds
 
@@ -52,7 +52,7 @@ void loop() {
     else {
       digitalWrite(RELAY4, LOW);    // Plasma / relay OFF
       SwitchFlag = false;
-      Serial.println("Switch Disabled");
+      Serial.println("Switch Disabled| Plasma OFF");
 
       delay(10000); //Pump ramp down: 10 seconds
 
