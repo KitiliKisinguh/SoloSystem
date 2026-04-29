@@ -1,96 +1,144 @@
-const int switchPin = 5;   // Switch from D5 to GND
-const int RELAY4  = 10;   // Relay4
-const int RELAY3= 8; //VFD Control
-const int trigPin=7;
-//Plasma only High When Pump is On
-bool SwitchFlag= true; //Switch is Inverted
-bool pumpON=false;
-bool waveOn = false; 
-const unsigned long debounceTime = 50;  // ms
+const int switchPin  = 5;   // Switch input
+const int RELAY4     = 10;  // Plasma relay
+const int RELAY3     = 8;   // Pump / VFD control
+const int SBDChamber = 2;   // SBD chamber input interrupt pin
 
-int lastReading = HIGH;        // raw last read state
-int stableState = HIGH;        // debounced stable state
+const unsigned long debounceTime = 50;
+const unsigned long pumpDelayTime = 10000; // 10 seconds
+
+bool systemRequested = false;
+bool systemRunning = false;
+
+volatile bool sbdChanged = false;
+volatile bool sbdState = false;
+
+int lastReading = LOW;
+int stableState = LOW;
 unsigned long lastChangeTime = 0;
+
+unsigned long stateStartTime = 0;
+
+enum SystemState {
+  SYSTEM_OFF,
+  PUMP_STARTING,
+  PLASMA_ON,
+  PLASMA_STOPPING
+};
+
+SystemState currentState = SYSTEM_OFF;
+
+void onSBDChange() {
+  sbdState = digitalRead(SBDChamber);
+  sbdChanged = true;
+}
+
+void requestSystemOn() {
+  if (currentState == SYSTEM_OFF) {
+    digitalWrite(RELAY3, HIGH);   // Pump ON
+    Serial.println("Pump starting...");
+
+    stateStartTime = millis();
+    currentState = PUMP_STARTING;
+  }
+}
+
+void requestSystemOff() {
+  if (currentState == PLASMA_ON || currentState == PUMP_STARTING) {
+    digitalWrite(RELAY4, LOW);    // Plasma OFF first
+    Serial.println("Plasma OFF, pump ramping down...");
+
+    stateStartTime = millis();
+    currentState = PLASMA_STOPPING;
+  }
+}
+
+void updateSystemState() {
+  switch (currentState) {
+
+    case SYSTEM_OFF:
+      digitalWrite(RELAY3, LOW);
+      digitalWrite(RELAY4, LOW);
+      systemRunning = false;
+      break;
+
+    case PUMP_STARTING:
+      if (millis() - stateStartTime >= pumpDelayTime) {
+        digitalWrite(RELAY4, HIGH);   // Plasma ON after pump delay
+        Serial.println("Pump ON | Plasma ON");
+
+        systemRunning = true;
+        currentState = PLASMA_ON;
+      }
+      break;
+
+    case PLASMA_ON:
+      // System remains active until requested OFF
+      break;
+
+    case PLASMA_STOPPING:
+      if (millis() - stateStartTime >= pumpDelayTime) {
+        digitalWrite(RELAY3, LOW);    // Pump OFF after ramp-down
+        Serial.println("Pump OFF");
+
+        systemRunning = false;
+        currentState = SYSTEM_OFF;
+      }
+      break;
+  }
+}
 
 void setup() {
   pinMode(switchPin, INPUT_PULLUP);
+  pinMode(SBDChamber, INPUT_PULLUP);
+
   pinMode(RELAY4, OUTPUT);
   pinMode(RELAY3, OUTPUT);
+
   Serial.begin(115200);
-  // relay OFF initially
-  digitalWrite(RELAY4, LOW); //When High Plasma OFF  
-  digitalWrite(RELAY3, LOW); 
+
+  digitalWrite(RELAY4, LOW);  // Plasma OFF
+  digitalWrite(RELAY3, LOW);  // Pump OFF
+
+  attachInterrupt(digitalPinToInterrupt(SBDChamber), onSBDChange, CHANGE);
+
+  Serial.println("System Ready");
 }
 
 void loop() {
   int reading = digitalRead(switchPin);
-  //Serial.print("Switch Input: ");
-  //Serial.println(reading);   // prints 0 or 1; 0 Switch is OFF
 
-  // If input changed, reset debounce timer
   if (reading != lastReading) {
     lastChangeTime = millis();
     lastReading = reading;
   }
 
-  // If input has stayed unchanged long enough, accept it
   if ((millis() - lastChangeTime) > debounceTime) {
-  if (reading != stableState) {
-    stableState = reading;
+    if (reading != stableState) {
+      stableState = reading;
 
-    // Switch enabled = HIGH
-    if (stableState == HIGH) {
-      digitalWrite(RELAY3, HIGH);   // Pump on 
-      SwitchFlag = true;
-      Serial.println("Switch Enabled | Plasma ON");
-
-      delay(10000); //Pump ramp up: 10 Seconds
-
-      digitalWrite(RELAY4, HIGH);   // Plasma on
-      Serial.println("Pump ON");
-    } 
-    else {
-      digitalWrite(RELAY4, LOW);    // Plasma / relay OFF
-      SwitchFlag = false;
-      Serial.println("Switch Disabled| Plasma OFF");
-
-      delay(10000); //Pump ramp down: 10 seconds
-
-      digitalWrite(RELAY3, LOW);    // Pump OFF
-      Serial.println("Pump OFF");
+      if (stableState == HIGH) {
+        Serial.println("Switch Enabled");
+        requestSystemOn();
+      } 
+      else {
+        Serial.println("Switch Disabled");
+        requestSystemOff();
+      }
     }
   }
-}
-  //VFD Control(Pump control)
-  if (Serial.available()) {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim();
 
-    if (cmd == "ON") {
-      digitalWrite(RELAY3, HIGH);
-      Serial.println("PUMP ON");
-      pumpON= true;
-    } 
-    else if (cmd == "OFF") {
-      digitalWrite(RELAY3, LOW);
-      Serial.println("PUMP OFF");
-      pumpON= false;
-    } 
-    
-//Sig_gen trig
-    else if (cmd == "SIGON") {
-      waveOn = true;
-      Serial.println("Signal Generator ON");
-    } 
-    else if (cmd == "SIGOFF") {
-      waveOn = false;
-      Serial.println("Signal Generator OFF");
+  if (sbdChanged) {
+    sbdChanged = false;
+
+    if (sbdState == HIGH) {
+      Serial.println("SBD signal HIGH");
+      requestSystemOn();
     } 
     else {
-      Serial.println("Commands: ON, OFF, SIGON, SIGOFF");
+      Serial.println("SBD signal LOW");
+      requestSystemOff();
     }
-}
+  }
 
-  // Inverted output for FY6900
-  digitalWrite(trigPin, waveOn ? LOW : HIGH);
+  updateSystemState();
 }
